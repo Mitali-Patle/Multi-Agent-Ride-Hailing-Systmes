@@ -1,0 +1,14 @@
+# Core simulation and RL stack (all free and open source, CPU only).
+gymnasium>=0.29.1,<2
+stable-baselines3>=2.3,<3   # pulls in torch (CPU build is fine)
+numpy>=1.24,<3
+pandas>=2.0,<3
+
+# Charts, live demo, training monitoring
+matplotlib>=3.7,<4
+streamlit>=1.37,<2          # 1.37+ needed for st.fragment(run_every=...)
+altair>=5,<7                # dashboard charts (also a Streamlit dependency)
+tensorboard>=2.14,<3
+
+# Tests
+pytest>=7.4,<9

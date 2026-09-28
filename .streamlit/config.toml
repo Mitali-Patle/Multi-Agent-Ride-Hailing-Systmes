@@ -1,0 +1,8 @@
+# Light theme: the slide colour scheme (dark navy monopoly line) needs a light
+# background, and light reads better on a projector.
+[theme]
+base = "light"
+primaryColor = "#6D28D9"
+
+[browser]
+gatherUsageStats = false

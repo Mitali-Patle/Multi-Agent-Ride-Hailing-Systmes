@@ -1,0 +1,29 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime results: keep charts and FINAL models, ignore the rest
+results/logs/
+results/csv/
+results/models/**/round_*/
+results/models/**/untrained/
+results/charts/*_tmp*
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Local tooling
+.claude/
