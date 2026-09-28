@@ -14,15 +14,18 @@ Order of events within one tick (``MarketSim.step``):
    subset of idle drivers may switch platform (duopoly only).
 4. Riders: queued riders past their patience abandon, remaining queued
    riders are served first (FIFO), then new arrivals get quotes, choose a
-   platform or the outside option, and are matched or queued.
+   platform or the outside option, and are matched or queued. On the final
+   tick, riders still queued when the market closes are counted as
+   abandoned and charged the waiting cost up to closing time.
 5. Busy drivers advance one tick; finished rides complete and pay out. On
    the final tick every ride still in progress is completed (the market
    closes), so no matched ride goes unpaid.
 6. Record metrics and refresh each platform's observation (a platform whose
    rival feed has failed keeps the last rival prices it saw).
 
-Invariant, checked by the tests: idle + busy + offline over all platforms
-equals the number of drivers after every tick, and no count is negative.
+Invariants, checked by the tests: idle + busy + offline over all platforms
+equals the number of drivers after every tick, and no count is negative; by
+closing time every rider who chose a platform was either served or abandoned.
 """
 
 from __future__ import annotations
@@ -155,8 +158,11 @@ class MarketSim:
         self._apply_shocks(t, rec)
         self._post_actions(acts, rec)
         self._driver_switching(rec)
+        final = t == config.EPISODE_TICKS - 1
         self._match_riders(t, rec)
-        self._advance_rides(rec, final=(t == config.EPISODE_TICKS - 1))
+        if final:
+            self._close_queues(rec)
+        self._advance_rides(rec, final=final)
         self._finish_tick(rec)
         self.tick += 1
         return rec
@@ -241,6 +247,18 @@ class MarketSim:
                 busy[choice] += 1
             else:
                 self.queues[choice].push(rider)
+
+    def _close_queues(self, rec: TickRecord) -> None:
+        """Market closes: riders still queued go unserved and count as abandoned.
+
+        Like riders who ran out of patience, they bear the waiting cost of the
+        time they queued, here up to closing time.
+        """
+        for p, queue in enumerate(self.queues):
+            pt = rec.platforms[p]
+            for r in queue.clear():
+                pt.abandoned += 1
+                pt.rider_surplus -= config.WAIT_COST * (config.EPISODE_TICKS - r.arrival_tick)
 
     def _match(self, rider: Rider, driver_id: int, t: int, pt: PlatformTick) -> None:
         """Pair a rider with an idle driver; the bonus is locked at match time."""

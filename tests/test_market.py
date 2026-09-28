@@ -125,6 +125,16 @@ def test_all_matched_rides_are_paid_by_close() -> None:
     assert all(d.state is not DriverState.BUSY for d in m.pool.drivers)
 
 
+@pytest.mark.parametrize("n_platforms", [1, 2])
+def test_every_request_is_served_or_abandoned_by_close(n_platforms: int) -> None:
+    m = MarketSim(n_platforms, seed=3, n_drivers=5)  # scarce drivers, so riders are queued at closing time
+    run_episode(m, check=False)
+    assert m.metrics.records[-1].platforms[0].abandoned > 0  # the closing flush actually happened
+    assert m.queue_lengths() == [0] * n_platforms
+    totals = m.metrics.totals
+    assert totals("requests").sum() == totals("matched").sum() + totals("abandoned").sum()
+
+
 def test_observation_is_normalised_and_hides_rival_supply() -> None:
     m = MarketSim(2, seed=1)
     rng = np.random.default_rng(0)

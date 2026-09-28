@@ -45,7 +45,7 @@ demo/
   live_sim.py              inference-only live simulation + event log (shared by both demos, unit-tested)
   dashboard.py, panels.py  Streamlit dashboard
   run_scenario.py          headless CLI demo with terminal telemetry
-tests/                     pytest suite (49 tests)
+tests/                     pytest suite (51 tests)
 results/                   models/, logs/, csv/, charts/ (created at runtime)
 ```
 
@@ -61,7 +61,7 @@ inference, never training.
 1. Apply shocks: finished shocks expire (outage drivers return), then new shocks start.
 2. Platforms post their actions: fare level (5 options) and driver bonus (3 options).
 3. Drivers update their earnings beliefs from public information. Some idle drivers may switch platform (duopoly only).
-4. Queued riders who have run out of patience abandon. The remaining queue is served first, then new riders choose a platform or no ride and are matched or queued.
+4. Queued riders who have run out of patience abandon. The remaining queue is served first, then new riders choose a platform or no ride and are matched or queued. On the final tick, riders still queued when the market closes count as abandoned.
 5. Rides advance. Finished rides pay out: the driver gets (1 − commission)·fare + bonus, and the platform gets commission·fare − bonus.
 6. Metrics are recorded and observations refreshed.
 
@@ -189,12 +189,12 @@ These numbers come from the default config and seed 42, with 30 fixed evaluation
 |---|---:|---:|---|
 | Average fare | 170.9 | 135.8 (−21 %) | H1: **partly supported** |
 | Average wait (min) | 6.5 | 9.2 (+42 %) | fares are lower, but waits are *longer*: the fleet is split in two, so one platform can have a queue while the other has idle drivers |
-| Abandonment rate | 0.0 % | 0.5 % | |
+| Abandonment rate | 0.04 % | 1.2 % | includes riders still queued when the market closes |
 | Earnings per driver | 3,243 | 3,111 (−4 %) | H2: **supported**. Driver pay *fell* along with fares. No bonus war happened: the effect comes through fares, not bonuses. |
 | Platform profit (total) | 54,058 | 51,847 (−4 %) | |
-| Total welfare | 281,784 | 310,188 (+10 %) | H3: **not supported**. Lower prices served more riders, and rider surplus rose 57 % (see the logit caveat below). |
+| Total welfare | 281,779 | 310,035 (+10 %) | H3: **not supported**. Lower prices served more riders, and rider surplus rose 57 % (see the logit caveat below). |
 
-**Shock robustness** (trained duopoly, change vs no shock, 30 seeds): a peak-hour driver outage costs each platform about 1.1k–1.3k profit and adds 1.6 percentage points of abandonment. A demand spike *raises* profit. A sensor failure changes profit by less than 1 %, because the learned policies rely mostly on their own queue, their own utilisation and the time of day rather than on the rival's price.
+**Shock robustness** (trained duopoly, change vs no shock, 30 seeds): a peak-hour driver outage (starting at tick 115, 16:35) costs each platform about 1.1k–1.3k profit and adds 1.7 percentage points of abandonment. A demand spike *raises* profit. A sensor failure changes profit by less than 1 %, because the learned policies rely mostly on their own queue, their own utilisation and the time of day rather than on the rival's price.
 
 ---
 
@@ -206,7 +206,7 @@ These numbers come from the default config and seed 42, with 30 fixed evaluation
 * **Independent PPO is the primary method.** MADDPG (centralised critic) is the documented fallback if independent PPO failed to converge. It was not needed and is **not implemented**.
 * **PPO settings:** `gamma = 0.95`, `gae_lambda = 0.9` and `n_epochs = 10`. With the default `gamma = 0.99`, the policies collapsed to a single constant price. The shorter horizon (about 100 simulated minutes) reduced advantage noise enough for state-dependent pricing to emerge.
 * **Demand calibration:** peaks (about 30 arrivals per tick at 17:30) exceed fleet capacity (about 14 rides per tick), and off-peak demand is well below it. This makes surge pricing and driver supply matter, as they do in real markets. With a flatter curve, every policy converged to one fixed price.
-* **Accounting:** revenue is booked when a ride completes. At closing time, rides still in progress are completed and paid, so every matched ride is settled. Riders who abandon incur the waiting cost they already paid.
+* **Accounting:** revenue is booked when a ride completes. At closing time, rides still in progress are completed and paid, so every matched ride is settled. Riders who abandon incur the waiting cost they already paid. Riders still queued at closing time go unserved: they count as abandoned and bear the waiting cost up to closing, so every rider who chose a platform ends the day served or abandoned.
 
 ## Known limitations
 
