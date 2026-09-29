@@ -105,6 +105,7 @@ OBS_DIM = 11
 # --------------------------------------------------------------------------
 REWARD_SCALE = 100.0
 SEED = 42
+DEMAND_STREAM_KEY = 1  # spawn key of the separate rider-arrival stream (side-by-side demo only)
 N_ROUNDS = 5
 STEPS_PER_ROUND = 28_800  # per platform per round (a multiple of n_steps)
 TRAIN_RANDOM_SHOCK_PROB = 0.5  # chance a training episode contains a random shock
@@ -153,6 +154,7 @@ QUEUE_EVENT_THRESHOLD = 15  # log when a queue first exceeds this
 DASHBOARD_DEFAULT_SPEED = 4.0  # ticks per second in autoplay
 DASHBOARD_MAX_SPEED = 10.0
 DASHBOARD_MIN_SPEED = 0.5
+DASHBOARD_FAST_FORWARD_TICKS = 12  # the '+1 hour' button
 EVENT_LOG_MAX = 200
 SCENARIO_SHOCK_TICKS = {  # tick at which each shock fires in CLI scenarios
     "demand_spike": 60,

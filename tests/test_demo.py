@@ -64,21 +64,29 @@ def test_dashboard_missing_models_shows_instructions(tmp_path: Path, monkeypatch
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path)
     at = _app().run()
     assert not at.exception
-    assert any("train_duopoly" in e.value for e in at.error)
+    assert any("Missing trained" in e.value for e in at.error)
+    assert any("train_duopoly.py" in m.value and "train_monopoly.py" in m.value for m in at.markdown)
+
+
+def _click(at: AppTest, label: str) -> None:
+    next(b for b in at.button if b.label == label).click().run()
+    assert not at.exception, at.exception
 
 
 def test_dashboard_controls_and_shocks_never_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "RESULTS_DIR", tmp_path)  # no models: use the labelled baseline fallback
     at = _app().run()
-    at.checkbox[0].check().run()
-    for label in ("Step 1 tick", "Demand spike (concert ends)", "Driver outage (heavy rain)",
-                  "Sensor failure (rival feed down)", "Step 1 tick", "Step 1 tick"):
-        next(b for b in at.button if b.label == label).click().run()
-        assert not at.exception, at.exception
+    _click(at, "Run with the rule-based baseline instead")
+    for label in ("+1 tick", "Demand spike", "Driver outage", "Sensor failure", "+1 tick", "+1 tick"):
+        _click(at, label)
     sim = at.session_state["sim"]
-    assert sim.tick == 3 and sim.market.shocks.active
-    at.radio[0].set_value("monopoly").run()
-    next(b for b in at.button if b.label == "Step 1 tick").click().run()
-    next(b for b in at.button if b.label == "Reset").click().run()
-    assert not at.exception
-    assert at.session_state["sim"].mode == "monopoly"
+    assert sim.tick == 3 and sim.duo.market.shocks.active and sim.mono.market.shocks.active
+    assert len(sim.duo.market.shocks.active) == 3 and len(sim.mono.market.shocks.active) == 2  # no sensor in monopoly
+    _click(at, "+1 hour")
+    assert at.session_state["sim"].tick == 3 + config.DASHBOARD_FAST_FORWARD_TICKS
+    for _ in range(config.EPISODE_TICKS // config.DASHBOARD_FAST_FORWARD_TICKS):
+        _click(at, "+1 hour")
+    assert at.session_state["sim"].done
+    _click(at, "Driver outage")  # after closing time: ignored, no crash
+    _click(at, "Reset")
+    assert at.session_state["sim"].tick == 0

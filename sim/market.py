@@ -58,14 +58,21 @@ def fare_price(fare_idx: int) -> float:
 class MarketSim:
     """The shared ride-hailing market (1 zone, 1 or 2 platforms)."""
 
-    def __init__(self, n_platforms: int | None = None, seed: int | None = None, n_drivers: int | None = None) -> None:
+    def __init__(self, n_platforms: int | None = None, seed: int | None = None, n_drivers: int | None = None,
+                 common_demand: bool = False) -> None:
         """Build a market.
 
         Args:
             n_platforms: 1 (monopoly) or 2 (duopoly); defaults to config.
             seed: Seed for all randomness in this market.
             n_drivers: Override ``config.N_DRIVERS`` (mainly for tests).
+            common_demand: Draw rider arrivals from their own random stream,
+                so a monopoly and a duopoly built with the same seed see the
+                exact same riders (common random numbers for side-by-side
+                comparison). Off by default, which keeps training and
+                evaluation results unchanged.
         """
+        self.common_demand = common_demand
         self.n_platforms = config.N_PLATFORMS if n_platforms is None else int(n_platforms)
         if not 1 <= self.n_platforms <= config.MAX_PLATFORMS:
             raise ValueError(f"n_platforms must be 1..{config.MAX_PLATFORMS}, got {self.n_platforms}")
@@ -81,6 +88,10 @@ class MarketSim:
         P = self.n_platforms
         self.seed = seed
         self.rng = np.random.default_rng(seed)
+        self.demand_rng = (
+            np.random.default_rng(np.random.SeedSequence(seed, spawn_key=(config.DEMAND_STREAM_KEY,)))
+            if self.common_demand else self.rng
+        )
         self.tick = 0
         self.pool = DriverPool(P, self.rng, self.n_drivers)
         self.queues = [RiderQueue() for _ in range(P)]
@@ -229,7 +240,7 @@ class MarketSim:
             while idle[p] and len(self.queues[p]):
                 self._match(self.queues[p].pop(), int(idle[p].pop()), t, pt)
                 busy[p] += 1
-        riders = draw_arrivals(self.rng, t, rec.demand_mult, self._next_rider_id)
+        riders = draw_arrivals(self.demand_rng, t, rec.demand_mult, self._next_rider_id)
         self._next_rider_id += len(riders)
         rec.arrivals = len(riders)
         prices = np.array([fare_price(f) for f in self.fare_idx])

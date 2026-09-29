@@ -55,8 +55,12 @@ class LiveSimulation:
     """A resettable, steppable market with telemetry, driven by fixed policies."""
 
     def __init__(self, mode: str = "duopoly", seed: int | None = config.SEED, policy_source: str = "trained",
-                 results_dir: Path | None = None) -> None:
-        """Load policies for ``mode`` and start an episode with ``seed``."""
+                 results_dir: Path | None = None, common_demand: bool = False) -> None:
+        """Load policies for ``mode`` and start an episode with ``seed``.
+
+        ``common_demand`` gives the market its own rider-arrival stream so two
+        simulations with the same seed see identical riders (see MarketSim).
+        """
         if mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
         self.mode = mode
@@ -64,7 +68,7 @@ class LiveSimulation:
         self.policies, self.policy_label = load_policies(mode, policy_source, results_dir)
         self.names = list(config.PLATFORM_NAMES[: self.n_platforms]) if self.n_platforms > 1 else [config.MONOPOLY_NAME]
         self.seed = config.SEED if seed is None else int(seed)
-        self.market = MarketSim(self.n_platforms, seed=self.seed)
+        self.market = MarketSim(self.n_platforms, seed=self.seed, common_demand=common_demand)
         self.reset()
 
     # ----------------------------------------------------------------- control

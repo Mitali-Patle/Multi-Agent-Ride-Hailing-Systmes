@@ -1,13 +1,20 @@
-"""Streamlit live demo: watch trained platforms compete, and hit them with shocks.
+"""Streamlit live demo: monopoly vs duopoly, side by side, under live shocks.
 
 Launch with::
 
     streamlit run demo/dashboard.py
 
+Two markets run in lockstep: one trained monopolist, and two trained
+competing platforms. They get the same riders (same seed, shared arrival
+stream) and every shock button hits both at the same moment, so any gap
+between the lines comes from market structure alone. The page shows six
+charts: average fare, riders who got a ride, rides served, total welfare,
+average market share, and rider wait time (the one trade-off).
+
 The dashboard only runs inference on saved models (it never trains). The
-simulation lives in ``st.session_state`` between reruns. Autoplay runs inside
-an ``st.fragment`` that re-executes on a timer, so sidebar buttons (including
-the shock buttons) stay responsive while the simulation is playing.
+simulation lives in ``st.session_state`` between reruns; autoplay runs in an
+``st.fragment`` on a timer, so the sidebar buttons stay responsive while the
+day is playing.
 """
 
 from __future__ import annotations
@@ -24,142 +31,147 @@ import streamlit as st  # noqa: E402
 
 import config  # noqa: E402
 from demo import panels  # noqa: E402
-from demo.live_sim import LiveSimulation  # noqa: E402
+from demo.compare import ComparisonSimulation, chart_frames  # noqa: E402
 from sim.market import clock_time  # noqa: E402
 from sim.shocks import ShockKind  # noqa: E402
 
 logger = logging.getLogger(__name__)
-TRAIN_HELP = """No trained models found. From the project folder run:
+TRAIN_HELP = """Train the models first. From the project folder run:
 
 ```
 python training/train_duopoly.py
 python training/train_monopoly.py
 ```
-then reload this page. (Or tick *Use rule-based baseline* in the sidebar to demo the market without RL.)"""
+then reload this page."""
+SHOCK_HELP = {
+    ShockKind.DEMAND_SPIKE: (f"A concert just ended: {config.DEMAND_SPIKE_MULT:g}x more riders for "
+                             f"{config.DEMAND_SPIKE_TICKS * config.TICK_MINUTES} minutes."),
+    ShockKind.DRIVER_OUTAGE: (f"Heavy rain: {config.OUTAGE_FRACTION:.0%} of drivers log off for "
+                              f"{config.OUTAGE_TICKS * config.TICK_MINUTES} minutes."),
+    ShockKind.SENSOR_FAILURE: (f"The chosen platform's feed of rival prices freezes for "
+                               f"{config.SENSOR_FAIL_TICKS * config.TICK_MINUTES} minutes (duopoly only)."),
+}
+COMPACT_CSS = ("<style>.block-container, [data-testid='stMainBlockContainer']"
+               "{padding-top:2rem; padding-bottom:1rem}</style>")  # fit all five charts on one screen
+BADGE = ('<span style="background:{bg};color:{fg};padding:3px 10px;border-radius:12px;'
+         'margin-right:6px;font-size:0.9rem;font-weight:600">{text}</span>')
 
 
-def build_sim(mode: str, seed: int, use_baseline: bool) -> LiveSimulation | None:
-    """Return the session's simulation, rebuilding it when mode or policy source changes."""
-    key = (mode, use_baseline)
-    if st.session_state.get("sim_key") != key or "sim" not in st.session_state:
-        try:
-            st.session_state.sim = LiveSimulation(mode, seed, "baseline" if use_baseline else "trained")
-            st.session_state.sim_key = key
-        except FileNotFoundError as exc:
-            st.session_state.pop("sim", None)
-            st.session_state.pop("sim_key", None)
-            st.error(f"**{exc}**")
-            st.markdown(TRAIN_HELP)
-            return None
+def load_sim(seed: int) -> ComparisonSimulation | None:
+    """The session's side-by-side simulation, or ``None`` (with instructions) if models are missing."""
+    if "sim" in st.session_state:
+        return st.session_state.sim
+    source = "baseline" if st.session_state.get("use_baseline") else "trained"
+    try:
+        st.session_state.sim = ComparisonSimulation(seed, source)
+    except FileNotFoundError as exc:
+        st.error(f"**{exc}**")
+        st.markdown(TRAIN_HELP)
+        if st.button("Run with the rule-based baseline instead"):
+            st.session_state.use_baseline = True
+            st.rerun()
+        return None
     return st.session_state.sim
 
 
-def sidebar() -> tuple[LiveSimulation | None, bool, float]:
+def sidebar() -> tuple[ComparisonSimulation | None, bool, float]:
     """Controls. Returns ``(sim, autoplay, ticks_per_second)``."""
     sb = st.sidebar
-    sb.header("Controls")
-    mode = sb.radio("Market", ["duopoly", "monopoly"], horizontal=True)
-    seed = int(sb.number_input("Seed", min_value=0, max_value=1_000_000, value=config.SEED, step=1))
-    use_baseline = sb.checkbox("Use rule-based baseline", value=False,
-                               help="Fallback if trained models are missing; the demo is labelled accordingly.")
-    sim = build_sim(mode, seed, use_baseline)
+    sb.header("Simulation")
+    seed = int(sb.number_input("Seed", min_value=0, max_value=1_000_000, value=config.SEED, step=1,
+                               help="Same seed = same riders. Press Reset to apply a new seed."))
+    sim = load_sim(seed)
     if sim is None:
         return None, False, config.DASHBOARD_DEFAULT_SPEED
-    col1, col2 = sb.columns(2)
-    if col1.button("Reset"):
+    reset, tick, hour = sb.columns(3)
+    if reset.button("Reset", help="Restart the day at 07:00 with this seed"):
         sim.reset(seed)
-    if col2.button("Step 1 tick", disabled=sim.done):
+    if tick.button("+1 tick", disabled=sim.done, help="Advance 5 minutes"):
         sim.step()
+    if hour.button("+1 hour", disabled=sim.done, help="Fast-forward one hour, e.g. to reach rush hour"):
+        sim.advance(config.DASHBOARD_FAST_FORWARD_TICKS)
     autoplay = sb.toggle("Autoplay", value=False)
-    speed = sb.slider("Speed (ticks / second)", config.DASHBOARD_MIN_SPEED, config.DASHBOARD_MAX_SPEED,
+    speed = sb.slider("Speed (ticks per second)", config.DASHBOARD_MIN_SPEED, config.DASHBOARD_MAX_SPEED,
                       config.DASHBOARD_DEFAULT_SPEED, 0.5)
 
-    sb.subheader("Environmental shocks")
-    if sb.button("Demand spike (concert ends)"):
+    sb.header("Shocks")
+    sb.caption("Each shock hits both markets at the same moment. Biggest effect at rush hour "
+               "(08:00-09:30, 16:30-18:30).")
+    if sb.button("Demand spike", help=SHOCK_HELP[ShockKind.DEMAND_SPIKE]):
         st.toast(sim.trigger_shock(ShockKind.DEMAND_SPIKE))
-    if sb.button("Driver outage (heavy rain)"):
+    if sb.button("Driver outage", help=SHOCK_HELP[ShockKind.DRIVER_OUTAGE]):
         st.toast(sim.trigger_shock(ShockKind.DRIVER_OUTAGE))
-    options = list(range(sim.n_platforms)) if sim.n_platforms > 1 else [0]
-    target = sb.selectbox("Platform losing its rival price feed", options, format_func=lambda p: sim.names[p],
-                          disabled=sim.n_platforms < 2)
-    if sb.button("Sensor failure (rival feed down)", disabled=sim.n_platforms < 2,
-                 help="Only meaningful in duopoly: the platform's view of rival prices freezes."):
-        st.toast(sim.trigger_shock(ShockKind.SENSOR_FAILURE, target))
-    sb.caption(f"Shock sizes: demand x{config.DEMAND_SPIKE_MULT:g} for {config.DEMAND_SPIKE_TICKS} ticks; "
-               f"{config.OUTAGE_FRACTION:.0%} of drivers offline for {config.OUTAGE_TICKS} ticks; "
-               f"feed frozen for {config.SENSOR_FAIL_TICKS} ticks.")
+    blind = sb.radio("Platform that loses its rival feed", config.PLATFORM_NAMES, horizontal=True)
+    if sb.button("Sensor failure", help=SHOCK_HELP[ShockKind.SENSOR_FAILURE]):
+        st.toast(sim.trigger_shock(ShockKind.SENSOR_FAILURE, config.PLATFORM_NAMES.index(blind)))
     return sim, autoplay, speed
 
 
-def header(sim: LiveSimulation) -> None:
-    """Clock, status and active shocks."""
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Tick", f"{sim.tick} / {config.EPISODE_TICKS}")
-    c2.metric("Time of day", clock_time(sim.tick))
-    c3.metric("Market", sim.mode.capitalize())
-    st.caption(f"Policies: **{sim.policy_label}** (inference only, no training) · seed {sim.seed}")
-    active = sim.market.shocks.active_labels() if not sim.done else []
-    pending = [s.label() for s in sim.market.shocks.pending]
-    if active:
-        st.error("ACTIVE SHOCKS: " + " · ".join(a.upper() for a in active))
-    elif sim.done:
-        st.info("Episode finished. Press Reset (or change the seed) to run again.")
-    else:
-        st.success("No active shocks")
-    if pending and not sim.done:
-        st.warning("Queued for next tick: " + ", ".join(pending))
+def status(sim: ComparisonSimulation) -> None:
+    """Clock, day progress, and shock badges in one compact row."""
+    clock, bar = st.columns([1, 5], vertical_alignment="center")
+    clock.metric("Time", clock_time(sim.tick))
+    with bar:
+        st.progress(sim.tick / config.EPISODE_TICKS,
+                    text=f"Tick {sim.tick} of {config.EPISODE_TICKS}  ·  policies: {sim.policy_label}")
+        badges = [BADGE.format(bg="#FEE2E2", fg="#B91C1C", text=f"ACTIVE: {s}") for s in sim.active_shocks()]
+        badges += [BADGE.format(bg="#FEF3C7", fg="#92400E", text=f"Next tick: {s}") for s in sim.pending_shocks()]
+        if sim.done:
+            badges = [BADGE.format(bg="#E0E7FF", fg="#3730A3", text="Day over: press Reset to run again")]
+        elif not badges:
+            badges = [BADGE.format(bg="#F3F4F6", fg="#4B5563", text="No active shocks")]
+        st.markdown("".join(badges), unsafe_allow_html=True)
 
 
-def render(sim: LiveSimulation) -> None:
-    """All live panels."""
-    header(sim)
-    hist = sim.history()
-    if hist.empty:
-        st.info("Press **Step 1 tick** or switch on **Autoplay** to start the day.")
-        st.dataframe(sim.events_frame(), hide_index=True)
+def panel(container: st.delta_generator.DeltaGenerator, title: str, readout: str, chart: alt.TopLevelMixin) -> None:
+    """Title, one-line monopoly-vs-duopoly readout, then the chart."""
+    with container:
+        st.markdown(f"**{title}**  \n<span style='color:#4B5563'>{readout}</span>", unsafe_allow_html=True)
+        st.altair_chart(chart)
+
+
+def charts(sim: ComparisonSimulation) -> None:
+    """Six comparison charts: what competition gives riders, then the one trade-off (waiting)."""
+    frames = chart_frames(sim)
+    if not frames:
+        st.info("Press **+1 tick**, **+1 hour** or switch on **Autoplay** to start the day.")
         return
-    hist = panels.with_derived(hist)
-    names, windows = sim.names, sim.shock_windows()
-    ts = lambda col, title, y, step=True, fmt=",.0f": panels.timeseries(  # noqa: E731
-        hist, col, title, y, names, windows, step, fmt)
-
-    row = st.columns(3)
-    row[0].altair_chart(panels.driver_states(hist, names))
-    row[1].altair_chart(ts("fare_mult", "Fare multiplier posted", "x base fare", fmt=".2f"))
-    row[2].altair_chart(ts("bonus", "Driver bonus posted", "per ride"))
-    row = st.columns(3)
-    row[0].altair_chart(ts("queue", "Riders queueing", "riders"))
-    row[1].altair_chart(ts("cum_abandoned", "Riders who gave up (cumulative)", "riders"))
-    row[2].altair_chart(ts("cum_profit", "Cumulative platform profit", "currency", step=False))
-    row = st.columns(3)
-    row[0].altair_chart(ts("share", "Market share of completed rides", "share", step=False, fmt=".0%"))
-    row[1].altair_chart(ts("idle", "Idle drivers", "drivers"))
-    with row[2]:
-        w = panels.welfare_numbers(hist, sim.market.n_drivers)
-        st.markdown("**Rider welfare and driver earnings (so far)**")
-        a, b = st.columns(2)
-        a.metric("Avg fare", f"{w['avg_fare']:,.0f}")
-        b.metric("Wait (min)", f"{w['avg_wait']:.1f}")
-        a.metric("Gave up", f"{w['abandon']:.1%}")
-        b.metric("Pay/driver", f"{w['earn_per_driver']:,.0f}")
-        st.metric("Rider surplus", f"{w['rider_surplus']:,.0f}")
-    st.subheader("Event log")
-    st.dataframe(sim.events_frame(), hide_index=True, height=280)
+    shocks = sim.shock_windows()
+    chart, readout = panels.comparison_chart, panels.gap_readout
+    day = "Day so far"
+    top = st.columns(3)
+    panel(top[0], "Average fare paid", readout(frames["fare"], "fare", day),
+          chart(frames["fare"], "fare per ride", ",.0f", shocks))
+    panel(top[1], "Riders who got a ride", readout(frames["served"], "percent", day),
+          chart(frames["served"], "share of arriving riders", ".0%", shocks))
+    panel(top[2], "Rides served", readout(frames["rides"], "count", day),
+          chart(frames["rides"], "rides (cumulative)", ",.0f", shocks))
+    bottom = st.columns(3)
+    panel(bottom[0], "Total welfare", readout(frames["welfare"], "money", day),
+          chart(frames["welfare"], "riders + drivers + platforms", ",.0f", shocks))
+    panel(bottom[1], "Average market share", panels.share_readout(frames["share"]),
+          chart(frames["share"], "share of rides (day so far)", ".0%", shocks))
+    panel(bottom[2], "Rider wait time: the trade-off", readout(frames["wait"], "minutes"),
+          chart(frames["wait"], "minutes (30-min avg)", ".1f", shocks))
 
 
 def live_panel(autoplay: bool) -> None:
     """Advance one tick when autoplaying, then redraw. Runs as a timed fragment."""
-    sim: LiveSimulation = st.session_state.sim
+    sim: ComparisonSimulation = st.session_state.sim
     if autoplay and not sim.done:
         try:
             sim.step()
         except Exception as exc:  # the live demo must never crash on stage
+            logger.exception("step failed")
             st.error(f"Simulation step failed: {exc}. Press Reset to continue.")
             return
         if sim.done:
             st.rerun()  # full rerun switches the autoplay timer off
     try:
-        render(sim)
+        status(sim)
+        charts(sim)
+        with st.expander("Event log"):
+            st.dataframe(sim.events_frame(), hide_index=True, height=260)
     except Exception as exc:  # a drawing glitch must not stop the simulation
         logger.exception("render failed")
         st.warning(f"Could not draw a panel ({exc}); the simulation keeps running.")
@@ -167,11 +179,12 @@ def live_panel(autoplay: bool) -> None:
 
 def main() -> None:
     """Page entry point."""
-    st.set_page_config(page_title="Ride-hailing MARL live demo", layout="wide")
+    st.set_page_config(page_title="Monopoly vs duopoly: live", layout="wide")
     alt.data_transformers.disable_max_rows()
-    st.title("Competitive ride-hailing: live multi-agent simulation")
-    st.caption("Two independently trained PPO platforms (or one monopolist) set fares and driver bonuses each "
-               "5-minute tick; 50 rule-based drivers and Poisson-arriving riders react in real time.")
+    st.markdown(COMPACT_CSS, unsafe_allow_html=True)
+    st.markdown("## Monopoly vs duopoly, live")
+    st.caption("Same riders, drivers and shocks in both markets: one trained platform (navy) vs two competing "
+               "trained platforms (purple). Percentages = duopoly vs monopoly.")
     sim, autoplay, speed = sidebar()
     if sim is None:
         return

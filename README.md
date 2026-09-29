@@ -43,9 +43,11 @@ training/
   charts.py                projector-friendly matplotlib charts
 demo/
   live_sim.py              inference-only live simulation + event log (shared by both demos, unit-tested)
-  dashboard.py, panels.py  Streamlit dashboard
+  compare.py               monopoly and duopoly in lockstep with identical riders (feeds the dashboard)
+  dashboard.py, panels.py  Streamlit dashboard: five side-by-side comparison charts
   run_scenario.py          headless CLI demo with terminal telemetry
-tests/                     pytest suite (51 tests)
+tests/                     pytest suite (55 tests)
+presentation/              Beamer deck for Presentation 2 (slides.pdf, custom Iris theme)
 results/                   models/, logs/, csv/, charts/ (created at runtime)
 ```
 
@@ -150,20 +152,34 @@ Optional: monitor training in TensorBoard:
 tensorboard --logdir results/logs/tensorboard
 ```
 
-## Dashboard controls
+## Dashboard
+
+The dashboard runs **the monopoly and the duopoly side by side**, in lockstep. Both markets get the same riders at the same moments: they share the seed and a common rider-arrival stream (`MarketSim(common_demand=True)`). Every shock button hits both markets on the same tick. So any gap between the navy (monopoly) and purple (duopoly) lines is caused by market structure, not by luck.
+
+It shows five charts, each with a one-line "Monopoly X · Duopoly Y (gap %)" readout above it:
+
+| Chart | What is plotted |
+|---|---|
+| Platform profit | Profit per hour (last hour, rolling), plus the whole-day gap in the readout |
+| Market share | Share of completed rides over the last hour: duopoly platforms A and B vs the monopolist's 100 % |
+| Earnings per driver | Driver earnings per driver per hour, plus the whole-day gap in the readout |
+| Rider wait time | Average wait of riders picked up in the last 30 minutes |
+| Queue length | Riders waiting right now (both duopoly platforms added together) |
+
+Shock periods are shaded red on every chart. The per-tick **event log** (shocks, fare moves, driver migrations, queue alerts) is in a collapsed section below the charts.
 
 | Control | What it does |
 |---|---|
-| Market | Switch between the duopoly (2 trained platforms) and the monopoly (1 trained platform). |
-| Seed + Reset | Restart the 12-hour day with a new random seed. |
-| Step 1 tick | Advance 5 simulated minutes. |
+| Seed + Reset | Restart the 12-hour day (07:00 to 19:00) with this seed. |
+| +1 tick / +1 hour | Advance 5 minutes, or fast-forward an hour, e.g. to reach rush hour before firing a shock. |
 | Autoplay + speed | Run continuously (0.5 to 10 ticks per second). The shock buttons keep working while it runs. |
-| Use rule-based baseline | Fallback if no trained models exist. The page labels the policy source. |
-| **Demand spike** | *A concert just ended:* arrivals ×2.5 for 30 minutes. |
-| **Driver outage** | *Heavy rain:* 40 % of drivers log off for 1 hour. Busy drivers finish their current ride first. |
-| **Sensor failure** | *Rival price feed down:* the chosen platform's view of the rival's prices freezes at the last known values, and its `rival_feed_ok` flag drops to 0 for 90 minutes. Disabled in monopoly mode, which has no rival. |
+| **Demand spike** | *A concert just ended:* arrivals ×2.5 for 30 minutes, in both markets. |
+| **Driver outage** | *Heavy rain:* 40 % of drivers log off for 1 hour, in both markets. Busy drivers finish their current ride first. |
+| **Sensor failure** | *Rival price feed down:* the chosen duopoly platform's view of the rival's prices freezes and its `rival_feed_ok` flag drops to 0 for 90 minutes. Duopoly only, because a monopoly has no rival. |
 
-Panels: driver states per platform, fares and bonuses over time, queues and abandonments, cumulative profit, market share, rider welfare and driver pay, and a timestamped **event log** (shocks starting and ending, bonus changes, big fare moves, driver migrations, queue alerts, loss-making ticks). Active shocks show as a red banner and as shaded bands on every chart.
+If no trained models exist, the page shows the training commands and offers a clearly labelled rule-based fallback.
+
+**Demo tip:** the gap is largest at rush hour. With seed 42, press **+1 hour** nine times (to 16:00), press **Driver outage**, then turn on **Autoplay**. By about 17:00, duopoly profit and driver pay per hour are roughly 25–30 % below the monopoly's, and duopoly riders wait longer in longer queues. Over a whole normal day the gaps are smaller: profit and driver pay about 4 % lower in the duopoly, waits about 40 % longer.
 
 ---
 

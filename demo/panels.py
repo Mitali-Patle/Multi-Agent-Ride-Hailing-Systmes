@@ -1,9 +1,9 @@
-"""Chart and table builders for the Streamlit dashboard.
+"""Altair chart builders for the side-by-side dashboard.
 
-Pure functions from the simulation history (a pandas frame) to Altair charts
-or small frames, so the dashboard file only does layout and control flow.
-Colours follow ``config``: Platform A, Platform B, monopoly; shock windows
-are shaded in the shock colour on every time-series chart.
+Every chart compares the monopoly (navy) with the duopoly (purple; its two
+platforms in two purples on the market-share chart) over the 12-hour day,
+with shock windows shaded red. The readout helpers produce the one-line
+"Monopoly X · Duopoly Y (gap)" text the page shows above each chart.
 """
 
 from __future__ import annotations
@@ -12,81 +12,97 @@ import altair as alt
 import pandas as pd
 
 import config
+from demo.compare import DUO, DUO_A, DUO_B, MONO
+from sim.market import clock_time
 
-STATE_COLORS = {"busy": config.COLOR_A, "idle": "#C4B5FD", "offline": config.COLOR_SHOCK}
-CHART_HEIGHT = 300  # total height incl. title, legend and axes
+SERIES_ORDER = [MONO, DUO, DUO_A, DUO_B]
+SERIES_COLORS = {MONO: config.COLOR_MONOPOLY, DUO: config.COLOR_A, DUO_A: config.COLOR_A, DUO_B: config.COLOR_B}
+CHART_HEIGHT = 210
+DAY_START = config.START_HOUR
+DAY_END = config.START_HOUR + config.EPISODE_TICKS * config.TICK_MINUTES / 60.0
 
 
-def name_colors(names: list[str]) -> list[str]:
-    """Colour per platform name, in the given order."""
-    lookup = {config.PLATFORM_NAMES[0]: config.COLOR_A, config.PLATFORM_NAMES[1]: config.COLOR_B,
-              config.MONOPOLY_NAME: config.COLOR_MONOPOLY}
-    return [lookup.get(n, config.COLOR_BASELINE) for n in names]
+def _hour(tick: float) -> float:
+    """Clock time in hours for the start of a tick."""
+    return config.START_HOUR + tick * config.TICK_MINUTES / 60.0
 
 
 def _shock_layer(windows: list[tuple[int, int, str]]) -> alt.Chart | None:
-    """Translucent rectangles marking when shocks were active."""
+    """Translucent red bands for the periods when shocks were active."""
     if not windows:
         return None
-    frame = pd.DataFrame(windows, columns=["start", "end", "shock"])
+    frame = pd.DataFrame(
+        [(_hour(s), _hour(e), k.replace("_", " "), clock_time(s), clock_time(e)) for s, e, k in windows],
+        columns=["start", "end", "shock", "from", "to"],
+    )
     return alt.Chart(frame).mark_rect(color=config.COLOR_SHOCK, opacity=0.12).encode(
-        x="start:Q", x2="end:Q", tooltip=["shock:N", "start:Q", "end:Q"])
+        x="start:Q", x2="end:Q", tooltip=["shock:N", "from:N", "to:N"])
 
 
-def timeseries(hist: pd.DataFrame, value: str, title: str, y_title: str, names: list[str],
-               windows: list[tuple[int, int, str]], step: bool = True, fmt: str = ",.0f") -> alt.LayerChart | alt.Chart:
-    """Per-platform line over ticks with shock windows shaded behind it."""
-    data = hist[["tick", "clock", "name", value]]
-    line = alt.Chart(data).mark_line(strokeWidth=2, interpolate="step-after" if step else "linear").encode(
-        x=alt.X("tick:Q", scale=alt.Scale(domain=[0, config.EPISODE_TICKS], nice=False), title="tick (5 min)"),
-        y=alt.Y(f"{value}:Q", title=y_title, axis=alt.Axis(format=fmt)),
-        color=alt.Color("name:N", scale=alt.Scale(domain=names, range=name_colors(names)),
-                        legend=alt.Legend(orient="top", title=None)),
-        tooltip=["tick:Q", "clock:N", "name:N", alt.Tooltip(f"{value}:Q", format=fmt)],
+def comparison_chart(frame: pd.DataFrame, y_title: str, fmt: str, windows: list[tuple[int, int, str]],
+                     step: bool = False) -> alt.LayerChart | alt.Chart:
+    """One metric over the day, one line per market, shocks shaded behind (title is drawn by the page)."""
+    series = [s for s in SERIES_ORDER if s in set(frame["series"])]
+    data = frame.assign(time=[clock_time(t + 1) for t in frame["tick"]])
+    hours = list(range(int(DAY_START), int(DAY_END) + 1, 3))
+    line = alt.Chart(data).mark_line(strokeWidth=2.5, interpolate="step-after" if step else "linear").encode(
+        x=alt.X("hour:Q", title=None, scale=alt.Scale(domain=[DAY_START, DAY_END], nice=False),
+                axis=alt.Axis(values=hours, labelExpr="datum.value + ':00'")),
+        y=alt.Y("value:Q", title=y_title, axis=alt.Axis(format=fmt)),
+        color=alt.Color("series:N", scale=alt.Scale(domain=series, range=[SERIES_COLORS[s] for s in series]),
+                        legend=alt.Legend(orient="top", title=None, labelFontSize=13)),
+        tooltip=["time:N", "series:N", alt.Tooltip("value:Q", format=fmt)],
     )
     shocks = _shock_layer(windows)
     chart = line if shocks is None else alt.layer(shocks, line)
-    return chart.properties(title=title, height=CHART_HEIGHT, width="container")
+    return chart.properties(height=CHART_HEIGHT, width="container")
 
 
-def driver_states(hist: pd.DataFrame, names: list[str]) -> alt.Chart:
-    """Stacked bars: busy / idle / offline drivers per platform at the latest tick."""
-    last = hist[hist["tick"] == hist["tick"].max()]
-    data = last.melt(id_vars=["name"], value_vars=list(STATE_COLORS), var_name="state", value_name="drivers")
-    states = list(STATE_COLORS)
-    data["order"] = data["state"].map({s: i for i, s in enumerate(states)})
-    return alt.Chart(data).mark_bar(size=48).encode(
-        x=alt.X("name:N", sort=names, title=None, axis=alt.Axis(labelAngle=0, labelFontSize=14)),
-        y=alt.Y("drivers:Q", title="drivers", scale=alt.Scale(domain=[0, config.N_DRIVERS])),
-        color=alt.Color("state:N", scale=alt.Scale(domain=states, range=list(STATE_COLORS.values())),
-                        legend=alt.Legend(orient="top", title=None)),
-        order=alt.Order("order:Q"),
-        tooltip=["name:N", "state:N", "drivers:Q"],
-    ).properties(title="Drivers per platform (now)", height=CHART_HEIGHT, width="container")
+def latest(frame: pd.DataFrame) -> dict[str, float]:
+    """Most recent non-missing value of each series."""
+    clean = frame.dropna(subset=["value"]).sort_values("tick")
+    return clean.groupby("series")["value"].last().to_dict()
 
 
-def with_derived(hist: pd.DataFrame) -> pd.DataFrame:
-    """Add fare multiplier and cumulative columns used by the charts."""
-    hist = hist.sort_values(["platform", "tick"]).copy()
-    hist["fare_mult"] = hist["fare_idx"].map(dict(enumerate(config.FARE_MULTIPLIERS)))
-    grp = hist.groupby("platform")
-    hist["cum_profit"] = grp["profit"].cumsum()
-    hist["cum_abandoned"] = grp["abandoned"].cumsum()
-    hist["cum_completed"] = grp["completed"].cumsum()
-    total = hist.groupby("tick")["cum_completed"].transform("sum")
-    hist["share"] = (hist["cum_completed"] / total.where(total > 0)).fillna(0.0)
-    return hist
+def _compact(value: float, kind: str) -> str:
+    """Short number for a subtitle: '54.3k', '6.5 min', '12'."""
+    if kind == "minutes":
+        return f"{value:.1f} min"
+    if kind == "percent":
+        return f"{value:.0%}"
+    if kind == "fare":
+        return f"{value:,.1f}"
+    if kind == "money" and abs(value) >= 10_000:
+        return f"{value / 1000:,.1f}k"
+    return f"{value:,.0f}"
 
 
-def welfare_numbers(hist: pd.DataFrame, n_drivers: int) -> dict[str, float]:
-    """Running rider-welfare and driver numbers for the headline metrics."""
-    matched = hist["matched"].sum()
-    completed = hist["completed"].sum()
-    requests = hist["requests"].sum()
-    return {
-        "avg_fare": hist["fares_collected"].sum() / completed if completed else 0.0,
-        "avg_wait": hist["wait_ticks"].sum() / matched * config.TICK_MINUTES if matched else 0.0,
-        "abandon": hist["abandoned"].sum() / requests if requests else 0.0,
-        "earn_per_driver": hist["driver_earnings"].sum() / max(1, n_drivers),
-        "rider_surplus": hist["rider_surplus"].sum(),
-    }
+def _gap(mono: float, duo: float) -> str:
+    """Duopoly relative to monopoly, e.g. '(-27%)'; empty when undefined."""
+    return f" ({(duo - mono) / abs(mono):+.0%})" if abs(mono) > 1e-9 else ""
+
+
+def gap_readout(frame: pd.DataFrame, kind: str, label: str = "Now", day: pd.DataFrame | None = None) -> str:
+    """'Now: Monopoly X · Duopoly Y (+Z%)', plus the whole-day gap when ``day`` totals are given.
+
+    ``kind`` is 'money', 'minutes' or 'count' (controls number formatting).
+    """
+    now = latest(frame)
+    if MONO not in now or DUO not in now:
+        return "waiting for data"
+    mono, duo = now[MONO], now[DUO]
+    gap = f" ({(duo - mono) * 100:+.0f} pts)" if kind == "percent" else _gap(mono, duo)
+    text = f"{label}: Monopoly {_compact(mono, kind)} · Duopoly {_compact(duo, kind)}{gap}"
+    if day is not None:
+        totals = latest(day)
+        if MONO in totals and DUO in totals:
+            text += f"  |  day so far{_gap(totals[MONO], totals[DUO]) or ': n/a'}"
+    return text
+
+
+def share_readout(frame: pd.DataFrame) -> str:
+    """Average (day-so-far) market shares."""
+    now = latest(frame)
+    if DUO_A not in now:
+        return "waiting for data"
+    return f"Day so far: A {now[DUO_A]:.0%}  ·  B {now.get(DUO_B, 0.0):.0%}  ·  Monopoly {now.get(MONO, 1.0):.0%}"
